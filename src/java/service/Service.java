@@ -19,11 +19,14 @@ import java.sql.ResultSetMetaData;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import static java.lang.System.out;
+import java.nio.charset.Charset;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -42,411 +45,44 @@ import net.ucanaccess.jdbc.UcanaccessDriver;
 import org.json.JSONException;
 
 /**
- *
- * @author sysadmin
+ * Сервіс для вибірки даних із БД "Деканат"
+ * @author Синєпольський І. В.
  */
 @WebServlet(name = "Service", urlPatterns = {"/Service"})
 public class Service extends HttpServlet {
+
+  /**
+   * Файл збережених sql-запитів у вигляді json-масиву об`єктів виду (приклад):
+   * {queryname: "назва запиту", 
+   * _select: "NAMESTUDENT & ' (' & DATER & ')' AS _INFO,INDEX,NYEAR0",
+   * _from: "STUDENT", 
+   * _where: "NYEAR0=2014", 
+   * _group: "", 
+   * _order: "_INFO"}
+   *
+   */
   protected String queries_storage_file = "queries.json";
+
+  /**
+   * Директорія (абсолютний шлях), де зберігаються файли баз даних .mdb
+   */
   protected String absolute_path = "/home/sysadmin/Dek_Dat_New_2015/";
+
+  /**
+   * Список хешів виду "факультет" => назва_файлу_БД.mdb
+   */
   protected ArrayList < HashMap<String,String> > databases = new ArrayList();
-  protected HashMap<String,String>  params = new HashMap();
+
+  /**
+   * Хеш-мапа виду "parameter_name" => "parameter_value", "" REQUEST-параметрів
+   */
+  protected HashMap<String,String> params = new HashMap();
+
+  /**
+   * З`єднання з БД (mdb-файл MS Access)
+   */
   protected Connection conn;
   
-  
-  @Override
-  public void init() throws ServletException{
-    HashMap <String,String> ini_data = new HashMap<String,String>();
-    BufferedWriter writer = null;
-    ini_data.put("Біологічний",this.absolute_path+"Gb321.mdb");
-    ini_data.put("Економічний",this.absolute_path+"Gb511.mdb");
-    ini_data.put("Економічний (2)",this.absolute_path+"Gb512.mdb");
-    ini_data.put("Історичний",this.absolute_path+"Gb531.mdb");
-    ini_data.put("Математичний",this.absolute_path+"Gb521.mdb");
-    ini_data.put("Факультет журналістики","");
-    ini_data.put("Факультет іноземної філології",this.absolute_path+"Gb231.mdb");
-    ini_data.put("Факультет іноземної філології (2)",this.absolute_path+"Gb232.mdb");
-    ini_data.put("Факультет менеджменту",this.absolute_path+"Gb641.mdb");
-    ini_data.put("Факультет соціальної педагогіки та психології",this.absolute_path+"Gb225.mdb");
-    ini_data.put("Факультет соціології та управління",this.absolute_path+"Gb631.mdb");
-    ini_data.put("Факультет фізичного виховання",this.absolute_path+"Gb421.mdb");
-    ini_data.put("Фізичний",this.absolute_path+"Gb131.mdb");
-    ini_data.put("Філологічний",this.absolute_path+"Gb221.mdb");
-    ini_data.put("Юридичний",this.absolute_path+"Gb523.mdb");
-    ini_data.put("Юридичний (2)",this.absolute_path+"Gb524.mdb");
-
-    for (Map.Entry pairs : ini_data.entrySet()) {
-      String _db = (String)pairs.getValue();
-      HashMap <String,String> m = new HashMap<String,String>();
-      String _exists = "not exists";
-      m.put("faculty", (String)pairs.getKey());
-      m.put("db", _db);
-      if (!_db.isEmpty()){
-        File f = new File(_db);
-        if(f.exists() && !f.isDirectory()) {
-          _exists = "exists";
-        } else {
-          _exists = "not exists";
-        }
-      }
-      m.put("exists",_exists);
-      this.databases.add(m);
-    }
-    Collections.sort(this.databases, new Comparator<HashMap<String,String>>() {
-      @Override
-      public int compare(HashMap<String, String> t1, HashMap<String, String> t2) {
-        String k1,k2;
-        k1 = t1.get("faculty");
-        k2 = t2.get("faculty");
-        return k1.compareToIgnoreCase(k2);
-      }
-    });
-  }
-  
-  @Override
-  public void destroy() {
-    out.println("Destroying of servlet ......");
-    try {
-      if (this.conn != null){
-        this.conn.close();
-        ((UcanaccessConnection) this.conn).unloadDB();
-      }
-    } catch (SQLException ex) {
-      Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, ex);
-    }
-  }
-  
-  protected boolean accessConnect(String mdb_file) throws ClassNotFoundException, SQLException, IOException{
-    Class.forName("net.ucanaccess.jdbc.UcanaccessDriver");
-    String pathDB = mdb_file, nm = "";
-    if (this.conn != null){
-      nm = ((UcanaccessConnection) this.conn).getDbIO().getFile().getName();
-    }
-    if ((mdb_file.indexOf(nm) == -1) || this.conn == null){
-      String url = UcanaccessDriver.URL_PREFIX + pathDB+";newDatabaseVersion=V2003";//+";memory=false";
-      if (this.conn != null){
-        this.conn.close();
-        ((UcanaccessConnection) this.conn).unloadDB();
-      }
-      try {
-        this.conn = DriverManager.getConnection(url);
-      } catch(SQLException e){
-        out.print(e.getMessage());
-        return false;
-      }
-    }
-    return true;
-  }
-  
-  /**
-   *
-   * @param json_packed_query 
-   *  { "queryname":"custom name",
-   *    "_select":"SELECT ...(only columns)",
-   *    "_from":"FROM ...(only tables)",
-   *    "_where":"WHERE ...(only conditions)",
-   *    "_group":"GROUP BY ...(only group statements)",
-   *    "_order":"ORDER BY ...(only order statements)"
-   *  }
-   * @return boolean
-   */
-  protected boolean saveQuery(JSONObject json_packed_query){
-    try {
-      String r;
-      JSONObject jo = json_packed_query;
-      File qF = new File(this.queries_storage_file);
-      if(!qF.exists()) {
-          qF.createNewFile();
-      }
-      BufferedReader fr = new BufferedReader(new FileReader(this.queries_storage_file));
-      r = fr.readLine();
-      try {
-        if (r == null || !r.contains("[")){
-          r = "[]";
-        }
-      } catch (NullPointerException e) {
-        Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, e);
-        r = "[]";
-      }
-      JSONArray ja = new JSONArray(r);
-      boolean already_exists = false;
-      for (int i = 0; i < ja.length(); i++){
-        JSONObject t; 
-        String s1,s2;
-        t = (JSONObject)ja.get(i);
-        s1 = (String)t.get("queryname"); 
-        s2 = (String)jo.get("queryname"); 
-        if (s1.compareToIgnoreCase(s2) == 0){
-          already_exists = true;
-        }
-      }
-      fr.close();
-      if (already_exists){
-        return false;
-      }
-      PrintWriter fout = new PrintWriter(new BufferedWriter(
-              new FileWriter(this.queries_storage_file, false)));
-      ja.put(jo);
-      fout.println(ja);
-      fout.close();
-    }catch (IOException e) {
-      Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, e);
-      return false;
-    } catch (JSONException ex) {
-      Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, ex);
-      return false;
-    }
-    return true;
-  }
-  
-  protected JSONObject jDb(String mdb_file) throws ClassNotFoundException, SQLException, JSONException, IOException{
-    String nm ;
-    JSONObject jo = new JSONObject();
-    if (!this.accessConnect(mdb_file)){
-      jo.put("error","Помилка з`єднання до бази даних "+mdb_file);
-      return jo;
-    }
-    nm = ((UcanaccessConnection) this.conn).getDbIO().getFile().getName();
-    jo.put("name",nm);
-    return jo;
-  }
-  
-  protected JSONArray jDatabaseList() throws ClassNotFoundException{
-    JSONArray jsArray = new JSONArray();
-    for (int i = 0; i < this.databases.size(); i++){
-      jsArray.put(this.databases.get(i));
-    }
-    return jsArray;
-  }
-  
-  protected JSONObject jTables(String mdb_file) throws ClassNotFoundException, SQLException, JSONException, IOException{
-    JSONArray ja = new JSONArray();
-    JSONObject jo = new JSONObject();
-    if (!this.accessConnect(mdb_file)){
-      jo.put("error","Помилка з`єднання до бази даних "+mdb_file);
-      return jo;
-    }
-    Statement st = null;
-    try {
-      String query = "SELECT * FROM information_schema.tables where IS_INSERTABLE_INTO='YES' ORDER BY TABLE_NAME";
-      st = this.conn.createStatement();
-      ResultSet rs = st.executeQuery(query);
-      ResultSetMetaData md = rs.getMetaData();
-      int columns = md.getColumnCount();
-      while (rs.next()) {
-        HashMap<String,String> row = new HashMap(columns);
-        for(int i=1; i<=columns; ++i){
-          row.put((String)md.getColumnName(i), (String)rs.getObject(i));
-        }
-        ja.put(row.get("TABLE_NAME"));
-      }
-      jo.put("tables",ja);
-    } catch(SQLException e){
-      jo.put("error",e.getMessage());
-    } finally {
-      if (st != null)
-        st.close();
-    }
-    return jo;
-  }
-  
-  protected JSONObject jColumns(String mdb_file, String table) throws ClassNotFoundException, SQLException, JSONException, IOException{
-    JSONArray ja = new JSONArray();
-    JSONObject jo = new JSONObject();
-    ArrayList<HashMap<String,String>> a = new ArrayList();
-    if (!this.accessConnect(mdb_file)){
-      jo.put("error","Помилка з`єднання до бази даних "+mdb_file);
-      return jo;
-    }
-    Statement st = null;
-    try {
-      st = this.conn.createStatement();
-      ResultSet rs = st.executeQuery("select top 1 * "
-              +"from "+table
-      );
-      ResultSetMetaData md = rs.getMetaData();
-      int columns = md.getColumnCount();
-      for(int i=1; i<=columns; ++i){
-        HashMap<String,String> col = new HashMap();
-        col.put("name",(String)md.getColumnName(i));
-        col.put("type", (String)md.getColumnTypeName(i));
-        a.add(col);
-        //out.println(md.getColumnName(i)+" : "+md.getColumnTypeName(i));
-      }
-      Collections.sort(a, new Comparator<HashMap<String,String>>() {
-        @Override
-        public int compare(HashMap<String, String> t1, HashMap<String, String> t2) {
-          String k1,k2;
-          k1 = t1.get("name");
-          k2 = t2.get("name");
-          return k1.compareToIgnoreCase(k2);
-        }
-      });
-      for (int i =0; i < a.size(); i++){
-        ja.put(a.get(i));
-      }
-      jo.put("columns", ja);
-    } catch(SQLException e){
-      jo.put("error",e.getMessage());
-    } finally {
-      if (st != null)
-        st.close();
-    }
-    return jo;
-  }
-  
-  protected ArrayList <HashMap<String,String>> getColumnsInfo(String from_query) throws SQLException{
-    Statement st = null;
-    ArrayList <HashMap<String,String>> columnInfo =  new ArrayList();
-    try {
-      st = this.conn.createStatement();
-      ResultSet rs = st.executeQuery("select top 1 * "+from_query);
-      ResultSetMetaData md = rs.getMetaData();
-      int columns = md.getColumnCount();
-      while (rs.next()) {
-        HashMap<String,Object> row = new HashMap(columns);
-        
-        for(int i=1; i<=columns; ++i){
-          HashMap<String,String> col = new HashMap();
-          col.put((String)md.getColumnName(i), (String)md.getColumnTypeName(i));
-          columnInfo.add(col);
-          //out.println(md.getColumnName(i)+" : "+md.getColumnTypeName(i));
-        }
-      }
-    } catch(SQLException e){
-      out.print(e.getMessage());
-    } finally {
-      if (st != null)
-        st.close();
-    }
-    return columnInfo;
-  }
-  
-  protected JSONObject jSearchSql(String mdb_file, 
-          String _columns, String _from, 
-          String _where, String _group, String _order, String queryname
-    ) throws JSONException, SQLException, ClassNotFoundException, IOException{
-    JSONArray ja = new JSONArray();
-    JSONObject jo = new JSONObject();
-    String query = "SELECT ", 
-            where = _where.trim().replace("\n", " ").replace("\r"," "), 
-            columns = _columns.trim().replace("\n", " ").replace("\r"," "),
-            from = _from.trim().replace("\n", " ").replace("\r"," "), 
-            group = _group.trim().replace("\n", " ").replace("\r"," "), 
-            order = _order.trim().replace("\n", " ").replace("\r"," ");
-    ArrayList <HashMap<String,String>> columnInfo;
-    Statement st = null;
-    if (!this.accessConnect(mdb_file)){
-      jo.put("error","Помилка з`єднання до бази даних "+mdb_file);
-      return jo;
-    }
-    columnInfo = this.getColumnsInfo("from "+from);
-    if (where.trim().isEmpty()){
-      where = "TRUE ";
-    }
-    if (columns.isEmpty()){
-      jo.put("error", "відсутні стовпчики для вибірки");
-      return jo;
-    }
-    if (from.isEmpty()){
-      jo.put("error", "відсутні таблиці для вибірки");
-      return jo;
-    }
-    for(String key : this.params.keySet()) {
-      for (HashMap<String, String> columnInfoHash : columnInfo) {
-        if (columnInfoHash.containsKey(key)) {
-          if (columnInfoHash.get(key).contains("CHAR")) {
-            where += " AND "+key + " LIKE '%"+this.params.get(key).replace("'", "\\'")+"%'";
-          } else if (columnInfoHash.get(key).contains("TEXT")) {
-            where += " AND "+key + " LIKE '%"+this.params.get(key).replace("'", "\\'")+"%'";
-          } else if (columnInfoHash.get(key).contains("TIMESTAMP")) {
-            where += " AND "+key + " LIKE '%"+this.params.get(key).replace("'", "\\'")+"%'";
-          } else if (columnInfoHash.get(key).contains("DATE")) {
-            where += " AND "+key + " LIKE '%"+this.params.get(key).replace("'", "\\'")+"%'";
-          } else if (columnInfoHash.get(key).contains("INT")) {
-            where += " AND "+key + "="+this.params.get(key);
-          } else {
-            where += " AND "+key + "="+this.params.get(key);
-          }
-        }
-      }
-    }
-    query += columns + " FROM "+from+" WHERE "+where;
-    if (!group.isEmpty()){
-      query += " GROUP BY "+group;
-    }
-    if (!order.isEmpty()){
-      query += " ORDER BY "+order;
-    }
-    if (!queryname.trim().isEmpty()){
-      JSONObject json_packed_query = new JSONObject();
-      json_packed_query.put("queryname",queryname.trim());
-      json_packed_query.put("_select",columns);
-      json_packed_query.put("_from",from);
-      json_packed_query.put("_where",where);
-      json_packed_query.put("_group",group);
-      json_packed_query.put("_order",order);
-      this.saveQuery(json_packed_query);
-    }
-    try {
-      st = this.conn.createStatement();
-      ResultSet rs = st.executeQuery(query);
-      ResultSetMetaData md = rs.getMetaData();
-      int columns_count = md.getColumnCount();
-      while (rs.next()) {
-        JSONArray _jrow = new JSONArray();
-        for(int i=1; i<=columns_count; ++i){
-          JSONObject pair = new JSONObject();
-          try {
-            String col = md.getColumnName(i);
-            pair.put("name",col);
-            if (rs.getObject(i) != null){
-              pair.put("value",rs.getObject(i));
-            } else {
-              pair.put("value","без значення");
-            }
-            _jrow.put(pair);
-          } catch (NullPointerException e){
-            jo.put("error",e.getMessage());
-            return jo;
-          }
-        }
-        ja.put(_jrow);
-      }
-      jo.put("data",ja);
-    } catch(SQLException e){
-      jo.put("error",e.getMessage());
-      out.println(e.getMessage());
-      return jo;
-    } finally {
-      if (st != null)
-        st.close();
-    }
-    return jo;
-  }
-  
-  protected JSONArray jSavedQueries() throws JSONException{
-    out.println("jSavedQueries --> ...");
-    try {
-      String r;
-      BufferedReader fr = new BufferedReader(new FileReader(this.queries_storage_file));
-      r = fr.readLine();
-      if (r == null || !r.contains("[")){
-        r = "[]";
-      }
-      JSONArray ja = new JSONArray(r);
-      fr.close();
-      return ja;
-    } catch (IOException e) {
-      Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, e);
-    } catch (JSONException ex) {
-      Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, ex);
-    } catch (NullPointerException ex) {
-      Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, ex);
-    }
-    return new JSONArray("[]");
-  }
-
   /**
    * Processes requests for both HTTP <code>GET</code> and <code>POST</code>
    * methods.
@@ -466,6 +102,7 @@ public class Service extends HttpServlet {
     if (callback.isEmpty()){
       response.setContentType("text/json;charset=UTF-8");
     } else {
+      //якщо надійшов callback, то очікується тип даних jsonp
       response.setContentType("text/javascript;charset=UTF-8");
     }
     try (PrintWriter out = response.getWriter()) {
@@ -561,6 +198,492 @@ public class Service extends HttpServlet {
       }
     }
   }
+  
+  /**
+   * Ініціалізація сервлету
+   * @throws ServletException
+   */
+  @Override
+  public void init() throws ServletException{
+    HashMap <String,String> ini_data = new HashMap<String,String>();
+    ini_data.put("Біологічний",this.absolute_path+"Gb321.mdb");
+    ini_data.put("Економічний",this.absolute_path+"Gb511.mdb");
+    ini_data.put("Економічний (2)",this.absolute_path+"Gb512.mdb");
+    ini_data.put("Історичний",this.absolute_path+"Gb531.mdb");
+    ini_data.put("Математичний",this.absolute_path+"Gb521.mdb");
+    ini_data.put("Факультет журналістики","");
+    ini_data.put("Факультет іноземної філології",this.absolute_path+"Gb231.mdb");
+    ini_data.put("Факультет іноземної філології (2)",this.absolute_path+"Gb232.mdb");
+    ini_data.put("Факультет менеджменту",this.absolute_path+"Gb641.mdb");
+    ini_data.put("Факультет соціальної педагогіки та психології",this.absolute_path+"Gb225.mdb");
+    ini_data.put("Факультет соціології та управління",this.absolute_path+"Gb631.mdb");
+    ini_data.put("Факультет фізичного виховання",this.absolute_path+"Gb421.mdb");
+    ini_data.put("Фізичний",this.absolute_path+"Gb131.mdb");
+    ini_data.put("Філологічний",this.absolute_path+"Gb221.mdb");
+    ini_data.put("Юридичний",this.absolute_path+"Gb523.mdb");
+    ini_data.put("Юридичний (2)",this.absolute_path+"Gb524.mdb");
+
+    for (Map.Entry pairs : ini_data.entrySet()) {
+      String _db = (String)pairs.getValue();
+      HashMap <String,String> m = new HashMap<String,String>();
+      String _exists = "not exists";
+      m.put("faculty", (String)pairs.getKey());
+      m.put("db", _db);
+      if (!_db.isEmpty()){
+        File f = new File(_db);
+        if(f.exists() && !f.isDirectory()) {
+          _exists = "exists";
+        } else {
+          _exists = "not exists";
+        }
+      }
+      m.put("exists",_exists);
+      this.databases.add(m);
+    }
+    Collections.sort(this.databases, new Comparator<HashMap<String,String>>() {
+      @Override
+      public int compare(HashMap<String, String> t1, HashMap<String, String> t2) {
+        String k1,k2;
+        k1 = t1.get("faculty");
+        k2 = t2.get("faculty");
+        return k1.compareToIgnoreCase(k2);
+      }
+    });
+  }
+  
+  /**
+   * Завершення сервлету
+   */
+  @Override
+  public void destroy() {
+    out.println("Destroying of servlet ......");
+    try {
+      if (this.conn != null){
+        this.conn.close();
+        ((UcanaccessConnection) this.conn).unloadDB();
+      }
+    } catch (SQLException ex) {
+      Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, ex);
+    }
+  }
+  
+  /**
+   * Підключення до БД
+   * @param mdb_file mdb-файл (без шляху до нього!)
+   * @return булевий параметр: чи вдалося з`єднатися з БД
+   * @throws ClassNotFoundException
+   * @throws SQLException
+   * @throws IOException
+   */
+  protected boolean accessConnect(String mdb_file) throws ClassNotFoundException, SQLException, IOException{
+    Class.forName("net.ucanaccess.jdbc.UcanaccessDriver");
+    String pathDB = mdb_file, nm = "";
+    if (this.conn != null){
+      nm = ((UcanaccessConnection) this.conn).getDbIO().getFile().getName();
+    }
+    if ((!mdb_file.contains(nm)) || this.conn == null){
+      String url = UcanaccessDriver.URL_PREFIX + pathDB+";newDatabaseVersion=V2003";//+";memory=false";
+      if (this.conn != null){
+        this.conn.close();
+        ((UcanaccessConnection) this.conn).unloadDB();
+      }
+      try {
+        this.conn = DriverManager.getConnection(url);
+      } catch(SQLException e){
+        out.print(e.getMessage());
+        return false;
+      }
+    }
+    return true;
+  }
+  
+  /**
+   * Збереження запиту у вигляді json
+   * @param json_packed_query 
+   *  { "queryname":"custom name",
+   *    "_select":"SELECT ...(only columns)",
+   *    "_from":"FROM ...(only tables)",
+   *    "_where":"WHERE ...(only conditions)",
+   *    "_group":"GROUP BY ...(only group statements)",
+   *    "_order":"ORDER BY ...(only order statements)"
+   *  }
+   * @return boolean
+   */
+  protected boolean saveQuery(JSONObject json_packed_query){
+    try {
+      String r;
+      JSONObject jo = json_packed_query;
+      File qF = new File(this.queries_storage_file);
+      if(!qF.exists()) {
+          qF.createNewFile();
+      }
+      BufferedReader fr = new BufferedReader(
+        new InputStreamReader(
+         new FileInputStream(this.queries_storage_file), Charset.forName("UTF8")
+        ) 
+      );
+      r = fr.readLine();
+      try {
+        if (r == null || !r.contains("[")){
+          r = "[]";
+        }
+      } catch (NullPointerException e) {
+        Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, e);
+        r = "[]";
+      }
+      JSONArray ja = new JSONArray(r);
+      boolean already_exists = false;
+      for (int i = 0; i < ja.length(); i++){
+        JSONObject t; 
+        String s1,s2;
+        t = (JSONObject)ja.get(i);
+        s1 = (String)t.get("queryname"); 
+        s2 = (String)jo.get("queryname"); 
+        if (s1.compareToIgnoreCase(s2) == 0){
+          already_exists = true;
+        }
+      }
+      fr.close();
+      if (already_exists){
+        return false;
+      }
+      PrintWriter fout = new PrintWriter(new BufferedWriter(
+        new OutputStreamWriter(
+         new FileOutputStream(this.queries_storage_file, false), Charset.forName("UTF8")
+        ) 
+      ));
+      ja.put(jo);
+      fout.println(ja);
+      fout.close();
+    }catch (IOException e) {
+      Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, e);
+      return false;
+    } catch (JSONException ex) {
+      Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, ex);
+      return false;
+    }
+    return true;
+  }
+  
+  /**
+   * 
+   * @param from_query from-частина sql-запиту, включно із словом "from"
+   * @return список хеш-мап виду "назва стовпчика" => "тип"
+   * @throws SQLException
+   */
+  protected ArrayList <HashMap<String,String>> getColumnsInfo(String from_query) throws SQLException{
+    Statement st = null;
+    ArrayList <HashMap<String,String>> columnInfo =  new ArrayList();
+    try {
+      st = this.conn.createStatement();
+      ResultSet rs = st.executeQuery("select top 1 * "+from_query);
+      ResultSetMetaData md = rs.getMetaData();
+      int columns = md.getColumnCount();
+      while (rs.next()) {
+        for(int i=1; i<=columns; ++i){
+          HashMap<String,String> col = new HashMap();
+          col.put((String)md.getColumnName(i), (String)md.getColumnTypeName(i));
+          columnInfo.add(col);
+          //out.println(md.getColumnName(i)+" : "+md.getColumnTypeName(i));
+        }
+      }
+    } catch(SQLException e){
+      out.print(e.getMessage());
+    } finally {
+      if (st != null)
+        st.close();
+    }
+    return columnInfo;
+  }
+  
+  //----------------------SERVICE-----------------------------
+  
+  /**
+   * Назва файлу БД
+   * @param mdb_file mdb-файл (без шляху до нього!)
+   * @return json-об`єкт виду (приклад) {name: "db_name.mdb"} або {"error" : "..."}
+   * @throws ClassNotFoundException
+   * @throws SQLException
+   * @throws JSONException
+   * @throws IOException
+   */
+  protected JSONObject jDb(String mdb_file) throws ClassNotFoundException, SQLException, JSONException, IOException{
+    String nm ;
+    JSONObject jo = new JSONObject();
+    if (!this.accessConnect(mdb_file)){
+      jo.put("error","Помилка з`єднання до бази даних "+mdb_file);
+      return jo;
+    }
+    nm = ((UcanaccessConnection) this.conn).getDbIO().getFile().getName();
+    jo.put("name",nm);
+    return jo;
+  }
+  
+  /**
+   * Список факультетів і повязаних з ними баз даних
+   * @return json-масив із об`єктів виду {"факультет": "назва_файлу_БД.mdb"}
+   * @throws ClassNotFoundException
+   */
+  protected JSONArray jDatabaseList() throws ClassNotFoundException{
+    JSONArray jsArray = new JSONArray();
+    for (int i = 0; i < this.databases.size(); i++){
+      jsArray.put(this.databases.get(i));
+    }
+    return jsArray;
+  }
+  
+  /**
+   * Список таблиць БД
+   * @param mdb_file mdb-файл (без шляху до нього!)
+   * @return json-об`єкт виду {"tables":["table1","table2",...]}
+   * @throws ClassNotFoundException
+   * @throws SQLException
+   * @throws JSONException
+   * @throws IOException
+   */
+  protected JSONObject jTables(String mdb_file) throws ClassNotFoundException, SQLException, JSONException, IOException{
+    JSONArray ja = new JSONArray();
+    JSONObject jo = new JSONObject();
+    if (!this.accessConnect(mdb_file)){
+      jo.put("error","Помилка з`єднання до бази даних "+mdb_file);
+      return jo;
+    }
+    Statement st = null;
+    try {
+      String query = "SELECT * FROM information_schema.tables where IS_INSERTABLE_INTO='YES' ORDER BY TABLE_NAME";
+      st = this.conn.createStatement();
+      ResultSet rs = st.executeQuery(query);
+      ResultSetMetaData md = rs.getMetaData();
+      int columns = md.getColumnCount();
+      while (rs.next()) {
+        HashMap<String,String> row = new HashMap(columns);
+        for(int i=1; i<=columns; ++i){
+          row.put((String)md.getColumnName(i), (String)rs.getObject(i));
+        }
+        ja.put(row.get("TABLE_NAME"));
+      }
+      jo.put("tables",ja);
+    } catch(SQLException e){
+      jo.put("error",e.getMessage());
+    } finally {
+      if (st != null)
+        st.close();
+    }
+    return jo;
+  }
+  
+  /**
+   * Стовпчики вказаної таблиці БД
+   * @param mdb_file mdb-файл (без шляху до нього!)
+   * @param table назва таблиці
+   * @return json-об`єкт виду {"columns": [{"name":"назва стовпчика","type":"тип"},{...},...]}
+   * @throws ClassNotFoundException
+   * @throws SQLException
+   * @throws JSONException
+   * @throws IOException
+   */
+  protected JSONObject jColumns(String mdb_file, String table) throws ClassNotFoundException, SQLException, JSONException, IOException{
+    JSONArray ja = new JSONArray();
+    JSONObject jo = new JSONObject();
+    ArrayList<HashMap<String,String>> a = new ArrayList();
+    if (!this.accessConnect(mdb_file)){
+      jo.put("error","Помилка з`єднання до бази даних "+mdb_file);
+      return jo;
+    }
+    Statement st = null;
+    try {
+      st = this.conn.createStatement();
+      ResultSet rs = st.executeQuery("select top 1 * "
+              +"from "+table
+      );
+      ResultSetMetaData md = rs.getMetaData();
+      int columns = md.getColumnCount();
+      for(int i=1; i<=columns; ++i){
+        HashMap<String,String> col = new HashMap();
+        col.put("name",(String)md.getColumnName(i));
+        col.put("type", (String)md.getColumnTypeName(i));
+        a.add(col);
+        //out.println(md.getColumnName(i)+" : "+md.getColumnTypeName(i));
+      }
+      Collections.sort(a, new Comparator<HashMap<String,String>>() {
+        @Override
+        public int compare(HashMap<String, String> t1, HashMap<String, String> t2) {
+          String k1,k2;
+          k1 = t1.get("name");
+          k2 = t2.get("name");
+          return k1.compareToIgnoreCase(k2);
+        }
+      });
+      for (int i =0; i < a.size(); i++){
+        ja.put(a.get(i));
+      }
+      jo.put("columns", ja);
+    } catch(SQLException e){
+      jo.put("error",e.getMessage());
+    } finally {
+      if (st != null)
+        st.close();
+    }
+    return jo;
+  }
+  
+  /**
+   * Виконує запит вибірки
+   * @param mdb_file mdb-файл (без шляху до нього!)
+   * @param _columns select-частина sql-запиту
+   * @param _from from-частина sql-запиту
+   * @param _where where-частина sql-запиту
+   * @param _group group-частина sql-запиту
+   * @param _order order-частина sql-запиту
+   * @param queryname назва запиту (якщо порожня стрічка - запит не зберігається)
+   * @return json-об`єкт виду {"data": [{"name":"назва стовпчика","value":"значення"},{...},...]}
+   * @throws JSONException
+   * @throws SQLException
+   * @throws ClassNotFoundException
+   * @throws IOException
+   */
+  protected JSONObject jSearchSql(String mdb_file, 
+          String _columns, String _from, 
+          String _where, String _group, String _order, String queryname
+    ) throws JSONException, SQLException, ClassNotFoundException, IOException{
+    JSONArray ja = new JSONArray();
+    JSONObject jo = new JSONObject();
+    String query = "SELECT ", 
+            where = _where.trim().replace("\n", " ").replace("\r"," "), 
+            columns = _columns.trim().replace("\n", " ").replace("\r"," "),
+            from = _from.trim().replace("\n", " ").replace("\r"," "), 
+            group = _group.trim().replace("\n", " ").replace("\r"," "), 
+            order = _order.trim().replace("\n", " ").replace("\r"," ");
+    ArrayList <HashMap<String,String>> columnInfo;
+    Statement st = null;
+    if (!this.accessConnect(mdb_file)){
+      jo.put("error","Помилка з`єднання до бази даних "+mdb_file);
+      return jo;
+    }
+    columnInfo = this.getColumnsInfo("from "+from);
+    if (where.trim().isEmpty()){
+      where = "TRUE ";
+    }
+    if (columns.isEmpty()){
+      jo.put("error", "відсутні стовпчики для вибірки");
+      return jo;
+    }
+    if (from.isEmpty()){
+      jo.put("error", "відсутні таблиці для вибірки");
+      return jo;
+    }
+    //додавання ку критерій пошуку значень параметрів, що прийшли GET чи POST 
+    //  запитом, якщо їх назви співпадають із назвою стовпчиків
+    for(String key : this.params.keySet()) {
+      for (HashMap<String, String> columnInfoHash : columnInfo) {
+        if (columnInfoHash.containsKey(key)) {
+          if (columnInfoHash.get(key).contains("CHAR")) {
+            where += " AND "+key + " LIKE '%"+this.params.get(key).replace("'", "\\'")+"%'";
+          } else if (columnInfoHash.get(key).contains("TEXT")) {
+            where += " AND "+key + " LIKE '%"+this.params.get(key).replace("'", "\\'")+"%'";
+          } else if (columnInfoHash.get(key).contains("TIMESTAMP")) {
+            where += " AND "+key + " LIKE '%"+this.params.get(key).replace("'", "\\'")+"%'";
+          } else if (columnInfoHash.get(key).contains("DATE")) {
+            where += " AND "+key + " LIKE '%"+this.params.get(key).replace("'", "\\'")+"%'";
+          } else if (columnInfoHash.get(key).contains("INT")) {
+            where += " AND "+key + "="+this.params.get(key);
+          } else {
+            where += " AND "+key + "="+this.params.get(key);
+          }
+        }
+      }
+    }
+    //query += columns + " FROM "+from+" WHERE "+where; // - такий вид запиту 
+    //                                                       не підтримує псевдоніми 
+    //                                                       у WHERE-частині
+    query += " * FROM (SELECT " + columns + " FROM "+from+") as _t_alias WHERE "+where;
+    if (!group.isEmpty()){
+      query += " GROUP BY "+group;
+    }
+    if (!order.isEmpty()){
+      query += " ORDER BY "+order;
+    }
+    if (!queryname.trim().isEmpty()){
+      //якщо вказано назву запиту, то зберегти
+      JSONObject json_packed_query = new JSONObject();
+      json_packed_query.put("queryname",queryname.trim());
+      json_packed_query.put("_select",columns);
+      json_packed_query.put("_from",from);
+      json_packed_query.put("_where",where);
+      json_packed_query.put("_group",group);
+      json_packed_query.put("_order",order);
+      this.saveQuery(json_packed_query);
+    }
+    try { //виконання запиту і отримання результатів
+      st = this.conn.createStatement();
+      ResultSet rs = st.executeQuery(query);
+      ResultSetMetaData md = rs.getMetaData();
+      int columns_count = md.getColumnCount();
+      while (rs.next()) {
+        JSONArray _jrow = new JSONArray();
+        for(int i=1; i<=columns_count; ++i){
+          JSONObject pair = new JSONObject();
+          try {
+            String col = md.getColumnName(i);
+            pair.put("name",col);
+            if (rs.getObject(i) != null){
+              pair.put("value",rs.getObject(i));
+            } else {
+              pair.put("value","без значення");
+            }
+            _jrow.put(pair);
+          } catch (NullPointerException e){
+            jo.put("error",e.getMessage());
+            return jo;
+          }
+        }
+        ja.put(_jrow);
+      }
+      jo.put("data",ja);
+    } catch(SQLException e){
+      jo.put("error",e.getMessage());
+      out.println(e.getMessage());
+      return jo;
+    } finally {
+      if (st != null)
+        st.close();
+    }
+    return jo;
+  }
+  
+  /**
+   * Збережені запити
+   * @return json-масив визначеного виду
+   * @see вид json-масиву надано в описі атрибуту queries_storage_file
+   * @throws JSONException
+   */
+  protected JSONArray jSavedQueries() throws JSONException{
+    //out.println("jSavedQueries --> ...");
+    try {
+      String r;
+      BufferedReader fr = new BufferedReader(
+        new InputStreamReader(
+         new FileInputStream(this.queries_storage_file), Charset.forName("UTF8")
+        ) 
+      );
+      r = fr.readLine();
+      if (r == null || !r.contains("[")){
+        r = "[]";
+      }
+      JSONArray ja = new JSONArray(r);
+      fr.close();
+      return ja;
+    } catch (IOException e) {
+      Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, e);
+    } catch (JSONException ex) {
+      Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, ex);
+    } catch (NullPointerException ex) {
+      Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, ex);
+    }
+    return new JSONArray("[]");
+  }
+
+
 
   // <editor-fold defaultstate="collapsed" desc="HttpServlet methods. Click on the + sign on the left to edit the code.">
   /**

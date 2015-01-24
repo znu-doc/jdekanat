@@ -66,6 +66,7 @@
             var err_func = function(x,e){
               alert(e);
               $("#Faculties").html("");
+              $("#dbTables").html("<p class='error'>помилка</p>");
               $("#Faculties").append("<option >"
                       +"помилка!"
                       +"</option>");
@@ -84,7 +85,7 @@
                       +"зачекайте..."
                       +"</option>");
               $("#table_placeholder").html("");
-              $("#table_placeholder").append("<p>зачекайте...</p>");
+              $("#table_placeholder").append("<i>зачекайте...</i>");
               _wait = true;
            };
             
@@ -293,8 +294,11 @@
             Faculties();
             
             $("#reload_faculties").click(function(){
-              Faculties();
-              return false;
+              if (!_wait){
+                db = "";
+                Faculties();
+                return false;
+              }
             });
             $("#reload_dbtables").click(function(){
               if (!_wait){
