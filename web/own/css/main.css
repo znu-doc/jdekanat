@@ -11,7 +11,9 @@ and open the template in the editor.
 .main-block {
   width:1000px;
   margin:0 auto;
-  border: 1px solid grey; 
+  border: 0px solid grey; 
+  background-color: #EEEEEE;
+  border-radius: 5px;
   font-size: 10pt; 
   font-family: Verdana;
   margin-bottom: 10px;
@@ -50,6 +52,7 @@ p.footer {
 
 table {
   border-collapse: collapse;
+
 }
 
 table tr td {

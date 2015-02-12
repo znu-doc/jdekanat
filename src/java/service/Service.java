@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 
 import java.io.IOException;
@@ -32,7 +33,9 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.text.SimpleDateFormat;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -53,12 +56,12 @@ public class Service extends HttpServlet {
 
   /**
    * Файл збережених sql-запитів у вигляді json-масиву об`єктів виду (приклад):
-   * {queryname: "назва запиту", 
-   * _select: "NAMESTUDENT & ' (' & DATER & ')' AS _INFO,INDEX,NYEAR0",
-   * _from: "STUDENT", 
-   * _where: "NYEAR0=2014", 
-   * _group: "", 
-   * _order: "_INFO"}
+   * <code>{queryname: "назва запиту",<br/> 
+   * _select: "NAMESTUDENT & ' (' & DATER & ')' AS _INFO,INDEX,NYEAR0",<br/>
+   * _from: "STUDENT", <br/>
+   * _where: "NYEAR0=2014",<br/> 
+   * _group: "", <br/>
+   * _order: "_INFO"}</code>
    *
    */
   protected String queries_storage_file = "queries.json";
@@ -66,15 +69,15 @@ public class Service extends HttpServlet {
   /**
    * Директорія (абсолютний шлях), де зберігаються файли баз даних .mdb
    */
-  protected String absolute_path = "/home/sysadmin/Dek_Dat_New_2015/";
+  protected String absolute_path = "D:/ISKT/DEKANAT/";
 
   /**
-   * Список хешів виду "факультет" => назва_файлу_БД.mdb
+   * Список хешів виду <code>"факультет" => назва_файлу_БД.mdb</code>
    */
   protected ArrayList < HashMap<String,String> > databases = new ArrayList();
 
   /**
-   * Хеш-мапа виду "parameter_name" => "parameter_value", "" REQUEST-параметрів
+   * Хеш-мапа виду <code>"parameter_name" => "parameter_value"</code> REQUEST-параметрів
    */
   protected HashMap<String,String> params = new HashMap();
 
@@ -82,6 +85,21 @@ public class Service extends HttpServlet {
    * З`єднання з БД (mdb-файл MS Access)
    */
   protected Connection conn;
+  
+  /**
+   * Мапа з`єднань з БД (mdb-файлами MS Access)
+   */
+  protected HashMap<String,Connection> conns = new HashMap<>();
+  
+  /**
+   * Максимальна кількість з`єднань з БД (mdb-файлами MS Access)
+   */
+  protected final int max_pool_size = 5;
+  
+  /**
+   * Кількість з`єднань з БД (mdb-файлами MS Access)
+   */
+  protected int pool_size = 0;
   
   /**
    * Processes requests for both HTTP <code>GET</code> and <code>POST</code>
@@ -204,7 +222,13 @@ public class Service extends HttpServlet {
    * @throws ServletException
    */
   @Override
-  public void init() throws ServletException{
+  public void init() throws ServletException {
+    try {
+        Class.forName("net.ucanaccess.jdbc.UcanaccessDriver");
+    } catch (ClassNotFoundException ex) {
+        Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, ex);
+        return ;
+    }
     HashMap <String,String> ini_data = new HashMap<String,String>();
     ini_data.put("Біологічний",this.absolute_path+"Gb321.mdb");
     ini_data.put("Економічний",this.absolute_path+"Gb511.mdb");
@@ -231,10 +255,15 @@ public class Service extends HttpServlet {
       m.put("db", _db);
       if (!_db.isEmpty()){
         File f = new File(_db);
-        if(f.exists() && !f.isDirectory()) {
-          _exists = "exists";
-        } else {
-          _exists = "not exists";
+        try {
+            if(f.exists() && !f.isDirectory()) {
+              _exists = "exists";
+            } else {
+              _exists = "not exists";
+            }
+        }
+        catch (NullPointerException ex) {
+          Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, ex);
         }
       }
       m.put("exists",_exists);
@@ -258,9 +287,12 @@ public class Service extends HttpServlet {
   public void destroy() {
     out.println("Destroying of servlet ......");
     try {
-      if (this.conn != null){
-        this.conn.close();
-        ((UcanaccessConnection) this.conn).unloadDB();
+      for(String parameter : this.conns.keySet()) {
+        Connection cn = this.conns.get(parameter);
+        if (cn != null){
+          cn.close();
+          ((UcanaccessConnection) cn).unloadDB();
+        }
       }
     } catch (SQLException ex) {
       Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, ex);
@@ -277,22 +309,72 @@ public class Service extends HttpServlet {
    */
   protected boolean accessConnect(String mdb_file) throws ClassNotFoundException, SQLException, IOException{
     Class.forName("net.ucanaccess.jdbc.UcanaccessDriver");
-    String pathDB = mdb_file, nm = "";
+    String pathDB = mdb_file, nm = "$$$@$$$";
+    Connection existing_conn = null, new_conn = null;
+    flog("D:/soft/apache_tomcat_out.txt",true,"------>>>");
+    flog("D:/soft/apache_tomcat_out.txt",true,
+            new SimpleDateFormat("dd.MM.yyyy HH:mm:ss").format(new Date())
+            +"> Trying to connect('"+mdb_file+"')...");
     if (this.conn != null){
       nm = ((UcanaccessConnection) this.conn).getDbIO().getFile().getName();
+    } else {
+      flog("D:/soft/apache_tomcat_out.txt",true,
+              new SimpleDateFormat("dd.MM.yyyy HH:mm:ss").format(new Date())
+              +"> /this is first trying");
     }
-    if ((!mdb_file.contains(nm)) || this.conn == null){
-      String url = UcanaccessDriver.URL_PREFIX + pathDB+";newDatabaseVersion=V2003";//+";memory=false";
-      if (this.conn != null){
-        this.conn.close();
-        ((UcanaccessConnection) this.conn).unloadDB();
+    if (this.conns.containsKey(pathDB)){
+      existing_conn = this.conns.get(pathDB);
+      flog("D:/soft/apache_tomcat_out.txt",true,
+              new SimpleDateFormat("dd.MM.yyyy HH:mm:ss").format(new Date())
+              +"> '"+mdb_file+"' already exists in hashmap "+this.conns.toString());
+    }
+    if ( ((!mdb_file.contains(nm)) || this.conn == null)){
+      flog("D:/soft/apache_tomcat_out.txt",true,
+              new SimpleDateFormat("dd.MM.yyyy HH:mm:ss").format(new Date())
+              +"> '"+mdb_file+"' not contains '"+nm+"', continue ...");
+      if (!pathDB.isEmpty() && existing_conn == null){
+        this.pool_size++;
+        if (this.pool_size > this.max_pool_size){
+          Map.Entry<String, Connection> entry = this.conns.entrySet().iterator().next();
+          flog("D:/soft/apache_tomcat_out.txt",true,
+                  new SimpleDateFormat("dd.MM.yyyy HH:mm:ss").format(new Date())
+                  +"> Connection pool overflow: connection for '"+entry.getKey()+"' removed.");
+          this.conns.get(entry.getKey()).close();
+          ((UcanaccessConnection) this.conns.get(entry.getKey())).unloadDB();
+          this.conns.remove(entry.getKey());
+          this.pool_size--;
+        }
+        flog("D:/soft/apache_tomcat_out.txt",true,
+                new SimpleDateFormat("dd.MM.yyyy HH:mm:ss").format(new Date())
+                +"> '"+pathDB+"' is not empty and there is no existing connection.");
+        String url = UcanaccessDriver.URL_PREFIX 
+                + pathDB
+                +";newDatabaseVersion=V2003"
+                +";memory=false";
+        new_conn = DriverManager.getConnection(url);
+        this.conns.put(pathDB, new_conn);
+        this.conn = new_conn;
+        flog("D:/soft/apache_tomcat_out.txt",true,
+                new SimpleDateFormat("dd.MM.yyyy HH:mm:ss").format(new Date())
+                +"> Connected to '"+pathDB+"'.");
+      } 
+      if ( ((mdb_file.contains(nm)) && this.conn != null) && existing_conn == null) {
+        flog("D:/soft/apache_tomcat_out.txt",true,
+                new SimpleDateFormat("dd.MM.yyyy HH:mm:ss").format(new Date())
+                +"> Connection for '"+pathDB+"' was not affected.");
+      } 
+      if (existing_conn != null){
+        this.conn = existing_conn;
+        flog("D:/soft/apache_tomcat_out.txt",true,
+                new SimpleDateFormat("dd.MM.yyyy HH:mm:ss").format(new Date())
+                +"> Connected to old connection ('"
+                + ((UcanaccessConnection) this.conn).getDbIO().getFile().getName()
+                +"').");
       }
-      try {
-        this.conn = DriverManager.getConnection(url);
-      } catch(SQLException e){
-        out.print(e.getMessage());
-        return false;
-      }
+    } else {
+      flog("D:/soft/apache_tomcat_out.txt",true,
+        new SimpleDateFormat("dd.MM.yyyy HH:mm:ss").format(new Date())
+        +"> Connection for '"+pathDB+"' was not affected.");
     }
     return true;
   }
@@ -300,13 +382,13 @@ public class Service extends HttpServlet {
   /**
    * Збереження запиту у вигляді json
    * @param json_packed_query 
-   *  { "queryname":"custom name",
-   *    "_select":"SELECT ...(only columns)",
-   *    "_from":"FROM ...(only tables)",
-   *    "_where":"WHERE ...(only conditions)",
-   *    "_group":"GROUP BY ...(only group statements)",
-   *    "_order":"ORDER BY ...(only order statements)"
-   *  }
+   *  <code>{ "queryname":"custom name",<br/>
+   *    "_select":"SELECT ...(only columns)",<br/>
+   *    "_from":"FROM ...(only tables)",<br/>
+   *    "_where":"WHERE ...(only conditions)",<br/>
+   *    "_group":"GROUP BY ...(only group statements)",<br/>
+   *    "_order":"ORDER BY ...(only order statements)"<br/>
+   *  }</code>
    * @return boolean
    */
   protected boolean saveQuery(JSONObject json_packed_query){
@@ -368,7 +450,7 @@ public class Service extends HttpServlet {
   /**
    * 
    * @param from_query from-частина sql-запиту, включно із словом "from"
-   * @return список хеш-мап виду "назва стовпчика" => "тип"
+   * @return список хеш-мап виду <code>"назва стовпчика" => "тип"</code>
    * @throws SQLException
    */
   protected ArrayList <HashMap<String,String>> getColumnsInfo(String from_query) throws SQLException{
@@ -401,7 +483,7 @@ public class Service extends HttpServlet {
   /**
    * Назва файлу БД
    * @param mdb_file mdb-файл (без шляху до нього!)
-   * @return json-об`єкт виду (приклад) {name: "db_name.mdb"} або {"error" : "..."}
+   * @return json-об`єкт виду (приклад) <code>{name: "db_name.mdb"} або {"error" : "..."}</code>
    * @throws ClassNotFoundException
    * @throws SQLException
    * @throws JSONException
@@ -421,7 +503,7 @@ public class Service extends HttpServlet {
   
   /**
    * Список факультетів і повязаних з ними баз даних
-   * @return json-масив із об`єктів виду {"факультет": "назва_файлу_БД.mdb"}
+   * @return json-масив із об`єктів виду <code>{"факультет": "назва_файлу_БД.mdb"}</code>
    * @throws ClassNotFoundException
    */
   protected JSONArray jDatabaseList() throws ClassNotFoundException{
@@ -435,7 +517,7 @@ public class Service extends HttpServlet {
   /**
    * Список таблиць БД
    * @param mdb_file mdb-файл (без шляху до нього!)
-   * @return json-об`єкт виду {"tables":["table1","table2",...]}
+   * @return json-об`єкт виду <code>{"tables":["table1","table2",...]}</code>
    * @throws ClassNotFoundException
    * @throws SQLException
    * @throws JSONException
@@ -476,7 +558,7 @@ public class Service extends HttpServlet {
    * Стовпчики вказаної таблиці БД
    * @param mdb_file mdb-файл (без шляху до нього!)
    * @param table назва таблиці
-   * @return json-об`єкт виду {"columns": [{"name":"назва стовпчика","type":"тип"},{...},...]}
+   * @return json-об`єкт виду <code>{"columns": [{"name":"назва стовпчика","type":"тип"},{...},...]}</code>
    * @throws ClassNotFoundException
    * @throws SQLException
    * @throws JSONException
@@ -536,7 +618,7 @@ public class Service extends HttpServlet {
    * @param _group group-частина sql-запиту
    * @param _order order-частина sql-запиту
    * @param queryname назва запиту (якщо порожня стрічка - запит не зберігається)
-   * @return json-об`єкт виду {"data": [{"name":"назва стовпчика","value":"значення"},{...},...]}
+   * @return json-об`єкт виду <code>{"data": [{"name":"назва стовпчика","value":"значення"},{...},...]}</code>
    * @throws JSONException
    * @throws SQLException
    * @throws ClassNotFoundException
@@ -681,6 +763,16 @@ public class Service extends HttpServlet {
       Logger.getLogger(Service.class.getName()).log(Level.SEVERE, null, ex);
     }
     return new JSONArray("[]");
+  }
+  
+  protected void flog(String where, boolean append, Object what) throws FileNotFoundException{
+    PrintWriter fout = new PrintWriter(new BufferedWriter(
+      new OutputStreamWriter(
+       new FileOutputStream(where, append), Charset.forName("UTF8")
+      ) 
+    ));
+    fout.println(what);
+    fout.close();
   }
 
 

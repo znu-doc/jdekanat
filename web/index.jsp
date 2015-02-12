@@ -1,32 +1,10 @@
 <%-- 
     Document   : index
     Created on : 19 січ 2015, 19:07:12
-    Author     : sysadmin
+    Author     : Синєпольський Ігор
 --%>
-<%@page import="java.util.Map"%>
-<%@page import="java.lang.reflect.Array"%>
-<%@page import="java.util.Map.Entry"%>
-<%@page import="java.util.HashMap"%>
-<%@page import="java.sql.ResultSetMetaData"%>
-<%@page import="java.util.ArrayList"%>
-<%@page import="java.util.SortedSet"%>
-<%@page import="java.util.Collections"%>
 <%@page import="java.text.DateFormat"%>
 <%@page import="java.io.File"%>
-
-<%@page import="java.io.IOException"%>
-<%@page import="java.sql.Connection"%>
-<%@page import="java.sql.DriverManager"%>
-<%@page import="java.sql.ResultSet"%>
-<%@page import="java.sql.SQLException"%>
-<%@page import="java.sql.Statement"%>
-
-<%@page import="net.ucanaccess.converters.TypesMap.AccessType"%>
-<%@page import="net.ucanaccess.ext.FunctionType"%>
-<%@page import="net.ucanaccess.jdbc.UcanaccessConnection"%>
-<%@page import="net.ucanaccess.jdbc.UcanaccessDriver"%>
-
-
 
  <% 
   DateFormat df = new java.text.SimpleDateFormat("dd.MM.yyyy HH:mm:ss");
@@ -36,11 +14,7 @@
   
 %>
 
-
-
 <%@page contentType="text/html" pageEncoding="UTF-8"%>
-
-
 <!DOCTYPE html>
 <html>
     <head>
@@ -58,7 +32,7 @@
           $(function(){
             db="";
             table = "";
-            service_url = "http://10.1.22.11:8080/jdekanat/Service";
+            service_url = "http://10.1.100.203:8088/jdekanat/Service";
             faculties_html = "";
             faculties_val = "";
             _wait = false;
@@ -72,6 +46,9 @@
                       +"</option>");
               $("#table_placeholder").html("<p class='error'>помилка</p>");
               _wait = false;
+              $("#reload_dbtables").show();
+              $("#execute_query").show();
+              $("#saved_queries").show();
            };
            
             var loading_func = function(){
@@ -86,8 +63,22 @@
                       +"</option>");
               $("#table_placeholder").html("");
               $("#table_placeholder").append("<i>зачекайте...</i>");
+                $("#reload_dbtables").hide();
+                $("#execute_query").hide();
+                $("#saved_queries").hide();
               _wait = true;
            };
+           
+            var common_success = function(){
+                $("#reload_dbtables").show();
+                $("#execute_query").show();
+                $("#saved_queries").show();
+                _wait = false;
+                $("#table_placeholder").html("");
+                $("#Faculties").html(faculties_html);
+                $("#Faculties").val(faculties_val);
+                savedQueries();
+            }
             
             var Faculties = function(){
               $.ajax({
@@ -105,13 +96,16 @@
                     alert(data.error);
                   } else {
                     $("#Faculties").html("");
-                    $("#Faculties").append("<option id='dis_opt'>"
+                    $("#Faculties").append("<option id='dis_opt' "
+                            +">"
                             +"--Оберіть факультет--"
                             +"</option>");
                     for (var i = 0; i < data.length; i++){
                       $("#Faculties").append("<option "
                               +"value='"+data[i].db+"' "
-                              +((data[i].exists === "exists")? "":"disabled")+">"
+                              +((data[i].db === db && db.length > 0)? " selected":" ")
+                              +((data[i].exists === "exists")? " ":" disabled")
+                              +">"
                               +data[i].faculty
                               +"</option>");
                     }
@@ -132,6 +126,9 @@
                 success: function(data){
                   _wait = false;
                   $("#saved_queries").html("");
+                  $("#reload_dbtables").show();
+                  $("#execute_query").show();
+                  $("#saved_queries").show();
                   if (typeof data.error !== "undefined"){
                     alert(data.error);
                   } else {
@@ -166,11 +163,7 @@
                 crossDomain: true,
                 data: {_$action: "jTables", _$mdb_file: db},
                 success: function(data){
-                  _wait = false;
-                  $("#table_placeholder").html("");
-                  $("#Faculties").html(faculties_html);
-                  $("#Faculties").val(faculties_val);
-                  savedQueries();
+                  common_success();
                   if (typeof data.error !== "undefined"){
                     alert(data.error);
                   } else if (typeof data.tables === "undefined"){
@@ -183,7 +176,7 @@
                               +"</a><div id='cols_"+data.tables[i]+"'></div></li>");
                     }
                     $("#dbTables ol li a").click(function(){
-                      if (db.length > 0){
+                      if (db.length > 0 && !_wait){
                         $("#dis_table_opt").remove();
                         table = $(this).attr("data-name");
                         Columns();
@@ -207,11 +200,7 @@
                 crossDomain: true,
                 data: {_$action: "jColumns", _$mdb_file: db, _$table: table},
                 success: function(data){
-                  _wait = false;
-                  $("#table_placeholder").html("");
-                  $("#Faculties").html(faculties_html);
-                  $("#Faculties").val(faculties_val);
-                  savedQueries();
+                  common_success();
                   if (typeof data.error !== "undefined"){
                     alert(data.error);
                   } else if (Object.prototype.toString.call( data.columns ) !== "[object Array]"){
@@ -249,11 +238,7 @@
                   _$queryname: $("#queryname").val()
                 },
                 success: function(data){
-                  _wait = false;
-                  $("#Faculties").html(faculties_html);
-                  $("#Faculties").val(faculties_val);
-                  $("#table_placeholder").html("");
-                  savedQueries();
+                  common_success();
                   if (typeof data.error !== "undefined"){
                     alert(data.error);
                   } else if (Object.prototype.toString.call( data.data ) !== "[object Array]"){
@@ -295,7 +280,6 @@
             
             $("#reload_faculties").click(function(){
               if (!_wait){
-                db = "";
                 Faculties();
                 return false;
               }
@@ -344,6 +328,12 @@
               return false;
             });
             
+            if (db.length === 0){
+                $("#reload_dbtables").hide();
+                $("#execute_query").hide();
+                $("#saved_queries").hide();
+            }
+            
           });
           
         </script>
@@ -355,7 +345,8 @@
     <table style="width: 99%;">
       <tr>
         <td>
-          <a href="#" id="reload_faculties">[оновити факультети]</a>
+          <div style='width: 200px;'>Факультети </div>
+          <a href="#" id="reload_faculties">[оновити]</a>
         </td>
         <td>
           <select id="Faculties">
@@ -366,7 +357,8 @@
       
       <tr>
         <td>
-          <a href="#" id="reload_dbtables">[оновити таблиці]</a>
+          <div style='width: 200px;'>Таблиці </div>
+          <a href="#" id="reload_dbtables">[оновити]</a>
         </td>
         <td>
           <div id="dbTables">
@@ -377,7 +369,8 @@
       
       <tr>
         <td>
-          <a href="#" id="execute_query">[виконати запит]</a>
+          <div style='width: 200px;'>Запити до БД  </div>
+          <a href="#" id="execute_query">[виконати]</a>
           <hr/>
           <select id="saved_queries">
             <option disabled>Не завантажено ще</option>
@@ -416,11 +409,7 @@
 
 <footer>
   <p class="footer">
-  <%= "IP-адреса: " + request.getRemoteAddr()
-  %>
-  </p>
-  <p class="footer">
-    Зараз: 
+    Сторінку сформовано  
   <%= df.format((new java.util.Date()))
   %>
   </p>
